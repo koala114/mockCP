@@ -84,7 +84,7 @@ public class DcepICBCA {
                     responseJson.put("return_code", "0");
                     responseJson.put("result_code", "0");
                     responseJson.put("date_end", date);
-                    responseJson.put("time_end", "0");
+                    responseJson.put("time_end", time);
                     responseJson.put("order_id", date.replaceAll("-","") + "0000" + (int)(Math.random() * 10000000 + 1));
                     responseJson.put("refund_success_date", date);
                     responseJson.put("out_trade_no", bizConetntJson.get("out_trade_no"));
