@@ -4,6 +4,8 @@ import org.json.simple.*;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Iterator;
+import java.util.Objects;
 
 public class BaiLianOK {
     String jsonText;
@@ -31,6 +33,15 @@ public class BaiLianOK {
 
     class OKCard {
         public OKCard(String service, JSONObject jsonObj) {
+            Iterator<String> keys = jsonObj.keySet().iterator();
+            while(keys.hasNext()) {
+                String key = keys.next();
+                Object value = jsonObj.get(key);
+                if (Objects.isNull(value) || value.equals("")) {
+                    service = "BadRequest";
+                }
+            }
+
             System.out.println(service);
             if (service.equals("okcardConsume")) {
                 Long totalAmount = (Long)jsonObj.get("totalAmount");
@@ -45,6 +56,25 @@ public class BaiLianOK {
                 Long refundAmount = (Long)jsonObj.get("refundAmount");
                 res = this.refundResponse(refundAmount);
             }
+            else if (service.equals("BadRequest"))
+                res = this.checkReqData();
+        }
+
+        public String checkReqData() {
+            JSONObject checkData = new JSONObject();
+
+            checkData.put("returnCode", "EK1075");
+            checkData.put("tradeNo", date + (int)(Math.random() * 10000000 + 1));
+            checkData.put("payTime", date + time);
+            checkData.put("returnMessage", "请求字段中有NULL或者空");
+            checkData.put("sign", "hpYcN4kLsDCBAYL+GoYzDqupYl9w1Bpnq2qqVj7YqKQZQ1v4R+WG+AUII6VlT3L8eS9wFo3Q6P2a1T39PFF14IxA3HTLNfm/K3QcgHypHLY/DRYzQo2zi1UcaSkZt6VjJGflijtSyN/uuUWI7U7wU+uhf0FVir4KztZqbElct+I=");
+            checkData.put("txnTime", time);
+            checkData.put("txnDate", date);
+            checkData.put("nonceStr", "e1b7d903e7574d7b8c67af37613d3a21");
+
+            jsonText = checkData.toString();
+
+            return jsonText;
         }
 
         public String revealResponse() {
@@ -185,6 +215,7 @@ public class BaiLianOK {
     public BaiLianOK(String reqStr) {
         JSONObject jsonObj = (JSONObject) JSONValue.parse(reqStr);
         String service = (String)jsonObj.get("service");
+
 
         if (service.startsWith("okcard")) {
             OKCard okCard = new OKCard(service, jsonObj);

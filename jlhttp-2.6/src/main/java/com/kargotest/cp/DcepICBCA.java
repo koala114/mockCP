@@ -6,10 +6,7 @@ import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 
 public class DcepICBCA {
@@ -43,9 +40,9 @@ public class DcepICBCA {
 
     public DcepICBCA(JSONObject bizContent) {
         bizConetntJson = bizContent;
-            if (!Objects.isNull(bizConetntJson.get("amount"))) {
-                this.setAmount(Integer.valueOf(bizConetntJson.get("amount").toString()));
-           }
+        if (!Objects.isNull(bizConetntJson.get("amount"))) {
+            this.setAmount(Integer.valueOf(bizConetntJson.get("amount").toString()));
+        }
     }
 
     public String revealResponse() {

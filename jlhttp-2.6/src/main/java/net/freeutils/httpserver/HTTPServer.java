@@ -35,12 +35,23 @@ import java.util.zip.GZIPOutputStream;
 import javax.net.ServerSocketFactory;
 import javax.net.ssl.SSLServerSocketFactory;
 import javax.net.ssl.SSLSocket;
+import javax.xml.parsers.ParserConfigurationException;
 import java.util.Objects;
 
+import com.kargotest.cp.WeChat;
+import com.kargotest.cp.AliPay;
 import com.kargotest.cp.BaiLianOK;
 import com.kargotest.cp.DcepICBCA;
+import com.kargotest.cp.DcepCCB;
+import com.kargotest.cp.Sandpay;
+import com.kargotest.cp.DcepBOC;
+import com.kargotest.cp.DcepBOCM;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
+import org.w3c.dom.Document;
 
 
 /**
@@ -1575,6 +1586,16 @@ public class HTTPServer {
                 throw new IOException("invalid request line: \"" + line + "\"");
             try {
                 method = tokens[0];
+                // alipay定制 请求中extend_params是未urlencode的json，会报错。所以先urlencode这段json，再替换url
+                if (tokens[1].contains("/gateway.do?")){
+                    Map<String, String> params = splitString(tokens[1].split("\\?")[1]);
+                    if (params.get("extend_params") != null){
+                        String extend_params = URLEncoder.encode(params.get("extend_params"), "UTF-8");
+                        logger.info("URLEncoding Alipay Request extend_params" + params.get("extend_params") + "To " + extend_params);
+                        tokens[1] = tokens[1].replace(params.get("extend_params"), extend_params);
+                    }
+                }
+                // alipay定制**********************
                 // must remove '//' prefix which constructor parses as host name
                 uri = new URI(trimDuplicates(tokens[1], '/'));
                 version = tokens[2]; // RFC2616#2.1: allow implied LWS; RFC7230#3.1.1: disallow it
@@ -3077,21 +3098,57 @@ public class HTTPServer {
         return f.toString();
     }
 
-    public static String convert(InputStream inputStream, Charset charset) throws IOException {
-
+    public static String convert(InputStream inputStream, Charset charset, boolean needURLDecode) throws IOException {
         try (BufferedReader br = new BufferedReader(new InputStreamReader(inputStream, charset))) {
-            String tmp = URLDecoder.decode(br.readLine(),"UTF-8");
-            System.out.println(tmp);
-            return tmp;
+            if (needURLDecode){
+                String t = br.readLine();
+                logger.info("Request Before URLDecode: {}", t);
+                return URLDecoder.decode(t,"UTF-8");
+            }
+            else{
+                String t = br.readLine();
+                return t;
+
+            }
+
         }
     }
+
+    public static Map<String,String> splitString(String s) {
+        String[] split = s.split("[=&?]+");
+        int length = split.length;
+        Map<String, String> maps = new HashMap<>();
+
+        for (int i=0; i<length; i+=2){
+            maps.put(split[i], split[i+1]);
+        }
+
+        return maps;
+    }
+    public static Map<String, List<String>> splitQuery(URL url) throws UnsupportedEncodingException {
+        final Map<String, List<String>> query_pairs = new LinkedHashMap<String, List<String>>();
+        final String[] pairs = url.getQuery().split("&");
+        for (String pair : pairs) {
+            final int idx = pair.indexOf("=");
+            final String key = idx > 0 ? URLDecoder.decode(pair.substring(0, idx), "UTF-8") : pair;
+            if (!query_pairs.containsKey(key)) {
+                query_pairs.put(key, new LinkedList<String>());
+            }
+            final String value = idx > 0 && pair.length() > idx + 1 ? URLDecoder.decode(pair.substring(idx + 1), "UTF-8") : null;
+            query_pairs.get(key).add(value);
+        }
+        return query_pairs;
+    }
+
     /**
      * Starts a stand-alone HTTP server, serving files from disk.
      *
      * @param args the command line arguments
      */
-
+    private static final Logger logger = LogManager.getLogger(HTTPServer.class);
     static int icbcaAmount = 0;
+    static boolean isCCBQuery = true;
+
     public static void main(String[] args) {
         try {
             if (args.length == 0) {
@@ -3123,22 +3180,6 @@ public class HTTPServer {
                 }
             });
 
-            // DcepCCB
-            host.addContext("/CCBIS/B2CMainPlat_00_PD_BEPAY", new ContextHandler() {
-                public int serve(Request req, Response resp) throws IOException {
-                    Map<String, String> params = req.getParams();
-                    String result = "";
-
-                    if (params.get("ccbParam").length() > 1600) {
-                        result = " {\"RESULT\":\"U\",\"ORDERID\":\"000820390217\",\"AMOUNT\":\"0.02\",\"TRACEID\":\"101011X301624521814121946\",\"TfrOut_Acba\":\"\",\"ERRORCODE\":\"\",\"ERRORMSG\":\"\"}";
-                    }
-
-                    resp.getHeaders().add("Content-Type", "application/json");
-                    resp.send(200, result);
-                    return 0;
-                }
-            },"POST");
-
             // DcepICBCA
             Map<String, JSONObject> micropayMap = new HashMap<>();
             host.addContext("/api/mybank/pay/digitalwallet/", new ContextHandler() {
@@ -3151,10 +3192,22 @@ public class HTTPServer {
                     JSONObject bizConetntJson = new JSONObject();
                     String icbcaApi = req.uri.getPath().split("/")[5];
                     Map<String, String> params = req.getParams();
+                    logger.info(params);
                     String result = "";
 
                     try {
                         bizConetntJson = (JSONObject)parser.parse(params.get("biz_content"));
+                        Iterator<String> keys = bizConetntJson.keySet().iterator();
+                        while(keys.hasNext()) {
+                            String key = keys.next();
+                            Object value = bizConetntJson.get(key);
+                            if (Objects.isNull(value) || value.equals("")) {
+                                result = "{\"sign\":\"m4Ch3f43O8h7eW4hyQo94Mk0L\",\"response_biz_content\":{ \"return_code\":10650001,\"return_ms\":\"请求参数是NULL或空\",\"msg_id\":\"urcnl24ciutr9\"}}";
+                                resp.getHeaders().add("Content-Type", "application/json");
+                                resp.send(200, result);
+                                return 0;
+                            }
+                        }
                     } catch (org.json.simple.parser.ParseException pe) {
                         System.out.println("position: " + pe.getPosition());
                     }
@@ -3222,7 +3275,7 @@ public class HTTPServer {
             // BailianOK
             host.addContext("/okfep/trans/v3", new ContextHandler() {
                 public int serve(Request req, Response resp) throws IOException {
-                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"));
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
 
                     BaiLianOK baiLianOK = new BaiLianOK(paramStr);
                     String result = baiLianOK.getRes();
@@ -3234,6 +3287,302 @@ public class HTTPServer {
                     return 0;
                 }
             },"POST");
+
+            // DCEP-CCB 	"ftServer": "https://mapp.dcep.ccb.com/NCCB/MMER11FTMainPlat"
+            host.addContext("/CCBIS/B2CMainPlat_00_PD_BEPAY", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String result = "";
+                    DcepCCB ccb = new DcepCCB();
+
+                    if (isCCBQuery){
+                        result = ccb.queryResponse();
+                        isCCBQuery = false;
+                    }
+                    else {
+                        result = ccb.redempResponse();
+                        isCCBQuery = true;
+                    }
+                    System.out.println(result);
+
+                    resp.getHeaders().add("Content-Type", "application/json");
+                    resp.send(200, result);
+
+                    return 0;
+                }
+            },"POST");
+
+            // DCEP-CCB Refund
+            /*
+                查找 Redis key -> hub:cache:dcep:ccb:Str:00062000000
+                修改 CommunicationKey : DZlq16oYdRlxPwC5H8kZYvGs69ZdMpPg
+                修改 "ftServer": "https://mapp.dcep.ccb.com/NCCB/MMER11FTMainPlat"
+             */
+            host.addContext("/NCCB/MMER11FTMainPlat", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String result = "qWwcBrjJbgUPy70xs2Lhp/xKQ4LLZNXFcylZ4pTVdAuu2I+V7NRW6jXc/fMlqvMvg/kCgbFAF6kPKyKThIJ1F3XmLfgTJTJcEFb1+d/4q00PQ8eT1I7SEJ69+3ETrTQB7mA/puxpr+3CoGWv26H+LC+KFkPKLiCZrUcjnu91N8SWuKQJmLLqcrNcMGgQNcFpshKIpe/8wPTmenInZEis1qOPSNIjRSLvU1VaKs88ZeGRvSzcoQssXg6s4SlhvYDLK0mwwsHL0tZZ9iG2Dy28wWMgwgq1PR44QT/TquuSLWHtwSfKEgrjY6u4jWF17HUQvul/CIdC7EP2CkMhHrbL1yyPxz34ZkJ8fxHW1gjpMivF3nVw8XleARzsoL3CuE+7f8Aa6Y5AljP5mIEnjKcK1Q==";
+
+                    System.out.println(result);
+
+                    resp.send(200, result);
+
+                    return 0;
+                }
+            },"POST");
+
+
+            // GMO GenkiGMOLinkSettlementCallApiUrl
+            host.addContext("/link/tshop00051300/Multi/Entry", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    Map<String, String> params = req.getParams();
+                    System.out.println(params);
+                    String result = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n" +
+                            "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n" +
+                            "<head>\n" +
+                            " <meta name=\"viewport\" content=\"width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1\">\n" +
+                            "  <meta name=\"format-detection\" content=\"telephone=no\" />\n" +
+                            " <meta http-equiv=\"Content-Type\" content=\"text/html; charset=sjis-win\" />\n" +
+                            " <title>お支払い 株式会社バリューデザイン</title>\n" +
+                            " <link rel=\"stylesheet\" href=\"https://stg.link.mul-pay.jp/link/css/sp.css\" />\n" +
+                            "</head>\n" +
+                            "<body>\n" +
+                            "<h1>株式会社バリューデザイン</h1>\n" +
+                            "<div id=\"head\">\n" +
+                            "  <p class=\"navigate\">\n" +
+                            "    お支払い金額：\\<span class=\"amount\">2</span>\n" +
+                            "  </p >\n" +
+                            "</div>\n" +
+                            "\n" +
+                            "<div id=\"body\">\n" +
+                            " <div class=\"paymentMain\">\n" +
+                            "     <p class=\"navigate\">\n" +
+                            "   お支払い方法を選んでください。\n" +
+                            "   </p >\n" +
+                            "  <ul id=\"ptList\" class=\"paymentOptions\">\n" +
+                            "\n" +
+                            "    <li>\n" +
+                            "      <a href=\" \">\n" +
+                            "        <span class=\"pName\">クレジット</span>\n" +
+                            "      </a >\n" +
+                            "    </li>\n" +
+                            "  </ul>\n" +
+                            "   <div class=\"control\">\n" +
+                            "     <ul>\n" +
+                            "       <li>\n" +
+                            "         <a href=\"\">戻る</a >\n" +
+                            "       </li>\n" +
+                            "     </ul>\n" +
+                            "   </div>\n" +
+                            " </div>\n" +
+                            "\n" +
+                            "</div>\n" +
+                            "<div id=\"foot\">\n" +
+                            "</div>\n" +
+                            "</body>\n" +
+                            "</html>";
+                    resp.getHeaders().add("Content-Type", "text/html");
+                    SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss");
+                    String times = f.format(new Date());
+                    System.out.println("Response of creditPay at " + times);
+                    resp.send(200, result);
+
+                    return 0;
+                }
+            },"POST");
+
+            // GMO GenkiGMOStatusApiUrl
+            host.addContext("/payment/SearchTrade.idPass", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    Map<String, String> params = req.getParams();
+                    System.out.println(params);
+                    String result = "OrderID=GenkiB-110711&Status=CAPTURE&ProcessDate=20210804155144&JobCd=CAPTURE&AccessID=82d9e761623e4bdfa8c2b35e12378046&AccessPass=f5fb6048350f3ac36b709ddaaec5d9a3&ItemCode=0000990&Amount=288&Tax=0&SiteID=&MemberID=&CardNo=************1111&Expire=2301&Method=1&PayTimes=&Forward=2a99662&TranID=2108041508111111111111810700&Approve=0258317&ClientField1=&ClientField2=&ClientField3=";
+
+                    resp.getHeaders().add("Content-Type", "text/plain");
+                    SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss");
+                    String times = f.format(new Date());
+                    System.out.println("Response of creditPayStatus at " + times);
+                    resp.send(200, result);
+
+                    return 0;
+                }
+            },"POST");
+
+            // Sandpay
+            host.addContext("/gateway/api/order/pay", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
+                    List<String> data = Arrays.asList(paramStr.split("&"));
+                    String[] sandpayData = data.get(1).split("=", 2);
+                    Sandpay sdPay = new Sandpay(sandpayData[1]);
+                    String result = sdPay.sandPayResponse();
+
+                    resp.getHeaders().add("Content-Type", "application/json");
+                    resp.send(200, result);
+
+                    return 0;
+                }
+            },"POST");
+
+            host.addContext("/gateway/api/order/refund", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
+                    List<String> data = Arrays.asList(paramStr.split("&"));
+                    String[] sandpayData = data.get(1).split("=", 2);
+                    Sandpay sdPay = new Sandpay(sandpayData[1]);
+                    String result = sdPay.sandRefundResponse();
+
+                    resp.getHeaders().add("Content-Type", "application/json");
+                    resp.send(200, result);
+
+                    return 0;
+                }
+            },"POST");
+
+            host.addContext("/gateway/api/order/cancel", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
+                    List<String> data = Arrays.asList(paramStr.split("&"));
+                    String[] sandpayData = data.get(1).split("=", 2);
+                    Sandpay sdPay = new Sandpay(sandpayData[1]);
+                    String result = sdPay.sandCancelResponse();
+
+                    resp.getHeaders().add("Content-Type", "application/json");
+                    resp.send(200, result);
+
+                    return 0;
+                }
+            },"POST");
+
+            host.addContext("/gateway/api/card/querybalance", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    System.out.println("\"******** Sandpay querybalance ***********\"");
+                    //String sandpayBALIQResp = "charset=UTF-8&signType=01&sign=infdnPjeTjuYPTIHf5r66yWMaR8o2MOyQGbvQkKDQJTVQuBjMxWZoQ56sYwdlDBnvf9OYA96jMBLJ4qxNAMRY1Fj37+4dmvy2eMDgWwYziet5dksueW4dgBm7QGcDAVOlV23jBN3iHse+UzQEHrbYxHGQNo2ZJ2LA1j7hI/pTHlVNlM50uc81MPspw5CXSL5yUgr7xhtLqWRaqECJOHUD8UG5wh3OrINdsXULI6h3gXUorlp9YrpCkV13HJ8DQM9THFr/PPZ5jR4yOrcpm1RwVYL5aMZ0ZGGe+JE7jUMSZZqFMUKs5YI8XxbttfPKXiqaajrVFtu8xafdJ6LUTgK5g==&data={\"head\":{\"respTime\":\"20190419195156\",\"respMsg\":\"成功\",\"version\":\"1.0\",\"respCode\":\"000000\"},\"body\":{\"extend\":\"\",\"pointsBalance\":\"000000000000\",\"cardBalance\":\"00000000"+Integer.toString((int)(Math.random() * 10000 + 1))+"\",\"cardType\":null,\"cardState\":\""+Integer.toString((int)(Math.random() * 2 + 1))+"\",\"expDate\":\"20501231\"}}";
+
+                    // fixed balance, 188
+                    String sandpayBALIQResp = "charset=UTF-8&signType=01&sign=infdnPjeTjuYPTIHf5r66yWMaR8o2MOyQGbvQkKDQJTVQuBjMxWZoQ56sYwdlDBnvf9OYA96jMBLJ4qxNAMRY1Fj37+4dmvy2eMDgWwYziet5dksueW4dgBm7QGcDAVOlV23jBN3iHse+UzQEHrbYxHGQNo2ZJ2LA1j7hI/pTHlVNlM50uc81MPspw5CXSL5yUgr7xhtLqWRaqECJOHUD8UG5wh3OrINdsXULI6h3gXUorlp9YrpCkV13HJ8DQM9THFr/PPZ5jR4yOrcpm1RwVYL5aMZ0ZGGe+JE7jUMSZZqFMUKs5YI8XxbttfPKXiqaajrVFtu8xafdJ6LUTgK5g==&data={\"head\":{\"respTime\":\"20190419195156\",\"respMsg\":\"成功\",\"version\":\"1.0\",\"respCode\":\"000000\"},\"body\":{\"extend\":\"\",\"pointsBalance\":\"000000000000\",\"cardBalance\":\"000000018800\",\"cardType\":null,\"cardState\":\"0\",\"expDate\":\"20501231\"}}";
+                    System.out.println(sandpayBALIQResp);
+                    resp.send(200, sandpayBALIQResp);
+                    return 0;
+
+                }
+            },"POST");
+
+            host.addContext("/gateway/api/card/updatestatus", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    System.out.println("******** Sandpay updatestatus ***********");
+                    String sandpayACTNLResp = "charset=UTF-8&signType=01&sign=K6/LSluGLYi5tnyvDjNfIkObi5GrbQZ4U3iS7AmkmpRWXZnHaUOhmKe9rc/iwygbewZkhDpwjiFP5xA655CjeLhcMBpkt8aey84lcCLM4DblEEQ+wTi5xL97OrdwoXwFVaXcRPLTfNvoj4u3MahnE0oMuvGxU3pWbZd8W/cS/QPrWfPW1lh5fs1CGDRN/k5fxegek2/HxB1fjBJg1lwFEh794KGB8FFcnV8r2TmUFOUl1LzspSruJ+IHRPq5LUUMscdOApBlTMIjoPCAKw2SUf40n1WrodsmuubheSEIdamO55KJE9abCZooIGLd6sOK6wDOG2s+5Ply+ZPhLXyEVQ==&data={\"head\":{\"respTime\":\"20190513174959\",\"respMsg\":\"通过\",\"version\":\"1.0\",\"respCode\":\"000000\"},\"body\":{\"extend\":\"\"}}";
+                    System.out.println(sandpayACTNLResp);
+                    resp.send(200, sandpayACTNLResp);
+                    return 0;
+
+                }
+            },"POST");
+
+            // WeChat
+            host.addContext("/pay/micropay", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
+                    String wechatPay = "";
+                    Document document = null;
+
+                    try {
+                        int counter;
+                        WeChat weChat = new WeChat();
+                        Map<String, String> elementMap = weChat.parseXMLString(paramStr);
+                        String txn_id = elementMap.get("out_trade_no");
+                        String teim_expire = elementMap.get("time_expire");
+
+                        WeChat.limitQueryTime.put(txn_id, 1);
+                        if (Long.valueOf(teim_expire)%2 == 0){
+                            WeChat.saveRequestObject.put(txn_id, elementMap);
+                            document = weChat.getQueryDoc(elementMap);
+                        }
+                        else
+                            document = weChat.getPayDoc(elementMap);
+
+                        wechatPay = weChat.toXMLString(document);
+
+                    }catch (ParserConfigurationException e){
+                        e.printStackTrace();
+                    }
+                    System.out.println(wechatPay);
+                    resp.getHeaders().add("Content-Type", "application/xml");
+                    resp.send(200, wechatPay);
+                    return 0;
+                }
+            },"POST");
+
+            host.addContext("/secapi/pay/refund", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
+                    String wechatRefund = "";
+                    try {
+                        WeChat weChat = new WeChat();
+                        Map<String, String> elementMap = weChat.parseXMLString(paramStr);
+                        Document document = weChat.getRefundDoc(elementMap);
+                        wechatRefund = weChat.toXMLString(document);
+                    }catch (ParserConfigurationException e){
+                        e.printStackTrace();
+                    }
+                    System.out.println(wechatRefund);
+                    resp.getHeaders().add("Content-Type", "application/xml");
+                    resp.send(200, wechatRefund);
+                    return 0;
+                }
+            },"POST");
+
+            host.addContext("/secapi/pay/reverse", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
+                    String wechatRSVAL = "";
+                    try {
+                        WeChat weChat = new WeChat();
+                        Map<String, String> elementMap = weChat.parseXMLString(paramStr);
+                        Document document = weChat.getRVSALDoc(elementMap);
+                        wechatRSVAL = weChat.toXMLString(document);
+                    }catch (ParserConfigurationException e){
+                        e.printStackTrace();
+                    }
+                    System.out.println(wechatRSVAL);
+                    resp.getHeaders().add("Content-Type", "application/xml");
+                    resp.send(200, wechatRSVAL);
+                    return 0;
+                }
+            },"POST");
+
+
+            host.addContext("/pay/orderquery", new ContextHandler() {
+                public int serve(Request req, Response resp) throws IOException {
+                    String paramStr = convert(req.getBody(), Charset.forName("UTF-8"), true);
+                    Document document = null;
+                    String wechatQuery = "";
+                    try {
+                        WeChat weChat = new WeChat();
+                        Map<String, String> elementMap = weChat.parseXMLString(paramStr);
+                        String txn_id = elementMap.get("out_trade_no");
+                        if (WeChat.saveRequestObject.get(txn_id) != null){
+                            int counter = WeChat.limitQueryTime.get(txn_id);
+                            if (counter < 3){
+                                document = weChat.getQueryDoc((Map)WeChat.saveRequestObject.get(txn_id));
+                                WeChat.limitQueryTime.put(txn_id, ++counter);
+                            }
+                            else
+                                document = weChat.getQueryResult((Map)WeChat.saveRequestObject.get(txn_id));
+                        }
+                        wechatQuery = weChat.toXMLString(document);
+                    }catch (ParserConfigurationException e){
+                        e.printStackTrace();
+                    }
+                    System.out.println(wechatQuery);
+                    resp.getHeaders().add("Content-Type", "application/xml");
+                    resp.send(200, wechatQuery);
+                    return 0;
+                }
+            },"POST");
+
+            host.addContext("/gateway.do", new AliPay(), "POST");
+            host.addContext("/sh/apis-zsc/ssp-in/termpay/rsaTran/", new DcepBOC(), "POST");
+            host.addContext("/api/walletpay/", new DcepBOCM(), "POST");
+
 
             server.start();
             System.out.println("HTTPServer is listening on port " + port);
