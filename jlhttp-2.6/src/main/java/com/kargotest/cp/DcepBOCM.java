@@ -31,9 +31,6 @@ apiwgPrivateKey = "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC7434lUbTHM
 public class DcepBOCM implements HTTPServer.ContextHandler{
     private static final Logger logger = LogManager.getLogger(DcepBOCM.class);
     private static Map<String, trans> transMap = new HashMap<>();
-    private static Map<String, ArrayList> trans4Refund = new HashMap<>();
-    private static Map<String, Integer> limitQueryTime = new HashMap<>();
-
 
     // https://www.devglan.com/online-tools/rsa-encryption-decryption 2048 Bit
     private final String BOCMApiWGPrivateKey = "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC7434lUbTHMOAXjTTYMPbOkvvRht838JF8B586LNjpf88y3/Hp97KR5MFXX18SPcxhNUShjWlqS5WALYA40PVztrLb11VCCnqlEpnmkWhp4dR5kCNycbLblEH7OSo+lql8xdu3cbuS0TFyvUBYxcOK5kE9EsaMMoM67+LO2gC1opJEaanSbTnUmb9DwRVz1xNmeJktagCilrJ632LgH1DG7HPPTJn/+WpKSBBJBTw7xCEyGVvyvol6Hg3aTNJs8H63AfMW75ln+DUTfU0TQyq3i3AKcEy1Uwtbxkzf1coirSiYlbBdXXby+AmpYR27bll+ptvl9W/rckqq8EPbG33JAgMBAAECggEAPUWG0ay/g2XQ7l1CKm5tThhovn95M8jj6Mqjhlkxs5PWggS940q/lQxAcLnNSymUCO9SHkz7X4qeilpMQjsCkGW4FjE2wH6iWEqknag1oLHglHQI2z1w0mKa0c5mlFqVkvcDG+OfA9XshjppTYnQpu9Hvx7sWLPwT7wC/ung6Vo2aw/SabocA0a31edQY+Ty0RdjVrAXP9T0JilWH7qRHZxlT/WlFEjs9zQUiGPJudbObut6XkkBRlEf8UohxMv0FuzogfdTa9UynpHshNGZEk3JDNSPOUc8RWgC0pTDKLZbwEoEF/X+DO1xNb6rEFbMFo/dKnmvxpjBxhQ/toZbsQKBgQD7pm95WdNHO7cWtGIiD9JpdCC57UVMFlgaFvWj6lqthVO8fW4aRjqs3ONEMT/2+ss86zWIINs94Q0f/wbZC+hKHU6J5OKzFAS/pdHU7TNTEiY/CtyXfjCJTdv6GzT/MJmes0PkvjNwRkqV7mIJzfssxaUIlnsUrJywNPNvJk8A1wKBgQC/IujTvZcNUO9dtlWgzELe3cMYuLMgvJYiAemx0a5lWa3DSzjBP2YV69838JLjcYy/mkirT+gwDlQsERpWJthIHU5qsb2uwj1b/UJPlM/OyIeBRPve1HPAC9oHtHyAbEjcRlKOs0+Emm2/+FOih2ulr+d5+OmhuOklwiUzQOuCXwKBgAvG1zKrpHqR7diPKoSDjwpGV/27f+G2rfrSlj5Mil/SfH+2sv9hx/8s+ynG0EKDrB02uLOdLgVwUcfsjGp95yoIwxMq9f0Bc9NwNCitzRgXIlkS7g3c5vKWBTRoL4u9v4Kwyv2adRfNAlKP7GCfFiEbQsTrHelyxoZsg/PwrAPTAoGATEJ9ap3mOqXkGxu4pmNY+tq4EJEAxzr3G7Jvr0bdsgpJzfWhO1k0PeLSONt/f8e6RGgmPlOvbB0LcFmSjHULLhqjQuaPq75MBPvTDTVuhC52Ahmn9IwHcsRHxXM5iXOqzlgwcEcSnvGOgF1v4RTu2jiIvp2VebTxMON5PC3WyTkCgYArnpIWscGMJHJHcdvuRE7M1XJ4LjTpzHGnuX1AbXbFxt7CtaZydAMJJ2flMo5cLmZKJ/HRNLw2E1IQekZrDyjWv/dJw71eM+GkBw21M5R7Sd4+/YU8Y5vyDDJ5oJw+YXbNoLgYKm9Py/jg8v2pZ9Wf1EO8yT13ZaeqvgknOH0j9g==";
@@ -42,6 +39,8 @@ public class DcepBOCM implements HTTPServer.ContextHandler{
     private Map<String, String> urlDecoded = new HashMap<>();
     private JSONParser parser = new JSONParser();
     private JSONObject BOCMReq;
+    private JSONObject req_head;
+    private JSONObject req_body;
     private String patternDate = "yyyyMMdd";
     private String patternTime = "hhmmss";
     private JSONObject rsp_biz_content;
@@ -67,6 +66,8 @@ public class DcepBOCM implements HTTPServer.ContextHandler{
 
         try{
             BOCMReq = (JSONObject)parser.parse(urlDecoded.get("biz_content"));
+            req_head = (JSONObject)BOCMReq.get("req_head");
+            req_body = (JSONObject)BOCMReq.get("req_body");
             logger.info("BOCMReq: {}", BOCMMsg);
         }catch (ParseException e){
             e.printStackTrace();
@@ -75,21 +76,21 @@ public class DcepBOCM implements HTTPServer.ContextHandler{
         logger.info("PATH: {}", path);
 
         if(path.equals("misPayOrder")){
-            result = doPayment(BOCMReq);
+            result = doPayment();
         }
         else if(path.equals("misQueryOrder")){
-            result = doQuery(BOCMReq);
+            result = doQuery();
         }
         else if(path.equals("misRefund")){
-            result = doRefund(BOCMReq);
+            result = doRefund();
         }
         resp.getHeaders().add("Content-Type", "application/json");
         resp.send(200, result);
         return 0;
     }
 
-    public String doPayment(JSONObject biz_content){
-        JSONObject req_body = (JSONObject)biz_content.get("req_body");
+    public String doPayment(){
+        JSONObject req_body = (JSONObject)BOCMReq.get("req_body");
         JSONObject rsp_body = new JSONObject();
         String amount = String.format("%1$" + 12 + "s", req_body.get("total_amount")).replace(' ', '0');
         if(req_body.get("total_amount").equals("100")){
@@ -134,10 +135,7 @@ public class DcepBOCM implements HTTPServer.ContextHandler{
         return doPaymentResult;
     }
 
-    public String doQuery(JSONObject biz_content){
-        JSONObject req_head = (JSONObject)biz_content.get("req_head");
-        JSONObject req_body = (JSONObject)biz_content.get("req_body");
-
+    public String doQuery(){
         JSONObject root = new JSONObject();
         JSONObject rsp_head = new JSONObject();
         rsp_head.put("transcode", "CIPP120001");
@@ -212,10 +210,7 @@ public class DcepBOCM implements HTTPServer.ContextHandler{
         return doQueryResult;
     }
 
-    public String doRefund(JSONObject biz_content){
-        JSONObject req_head = (JSONObject)biz_content.get("req_head");
-        JSONObject req_body = (JSONObject)biz_content.get("req_body");
-
+    public String doRefund(){
         JSONObject root = new JSONObject();
         JSONObject rsp_body = new JSONObject();
         String trace_no = (String) req_head.get("trace_no");
